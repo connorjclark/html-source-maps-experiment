@@ -36,27 +36,38 @@ class Marker
     private $marks = [];
     private $output = '';
 
-    public function mark()
+    public function mark($callStack = null, ...$args)
     {
         $args = func_get_args();
         $output = join($args, ' ');
 
+        if ($callStack == null) {
+            $callStack = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+            // Remove `mark`.
+            array_shift($callStack);
+            // Remove `internal_print`.
+            array_shift($callStack);
+        }
+
         $whitelist = ['file', 'line', 'function', 'class'];
-        $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
-        // Remove `mark` and `internal_print`.
-        array_shift($backtrace);
-        array_shift($backtrace);
         $callStack = array_map(function ($frame) use ($whitelist) {
             $filtered = array_intersect_key($frame, array_flip($whitelist));
             return $this->getFrameId($filtered);
-        }, $backtrace);
+        }, $callStack);
 
+        $id = count($this->mappings);
         $this->mappings[] = [
+            'source' => 'PHP',
             'callStack' => $callStack,
-            'len' => strlen($output),
         ];
         $this->output = $this->output . $output;
-        return $output;
+        echo ('<!-- hm mapping: ' . $id . ' ' . json_encode(end($this->mappings)) . '-->');
+        return [$output, $id];
+    }
+
+    public function markEnd($id)
+    {
+        echo ('<!-- hm mapping end: ' . $id . '-->');
     }
 
     public function &data()
@@ -64,13 +75,19 @@ class Marker
         return [
             'frames' => array_values($this->frames),
             'mappings' => $this->mappings,
-            // Only including HTML output because there is no way in raw JS to
-            // get the original HTML sent over the wire. By the time JS has access to the DOM,
-            // the browser has already done some spec-compliant parsing that can completetly modify
-            // malformed HTML. This could be removed if these maps were consumed via DevTools, which has access to everything.
-            // But for now, I'm doing all the map visualaziton within the page, so this is necessary.
             'output' => $this->output,
         ];
+    }
+
+    private $inlineTemplateLocationStack = [];
+    public function pushInlineTemplateLocation($file, $line, $class, $function)
+    {
+        $this->inlineTemplateLocationStack[] = [[
+            'file' => $file,
+            'line' => $line,
+            'class' => $class,
+            'function' => $function,
+        ]];
     }
 
     private function getFrameId($frame)
@@ -81,8 +98,10 @@ class Marker
             return $index;
         }
 
+        $id = count($this->frames);
         $this->frames[$key] = $frame;
-        return count($this->frames) - 1;
+        echo ('<!-- hm frame: ' . $id . ' ' . json_encode($frame) . '-->');
+        return $id;
     }
 }
 
@@ -95,8 +114,9 @@ class View
 
     private function internal_print()
     {
-        $output = $this->marker->mark(...func_get_args());
+        [$output, $id] = $this->marker->mark(null, ...func_get_args());
         echo ($output);
+        $this->marker->markEnd($id);
     }
 
     function print() {
@@ -126,7 +146,8 @@ class View
     }
 }
 
-function getHeader() {
+function getHeader()
+{
     return 'HTML Source Map example';
 }
 
@@ -141,16 +162,36 @@ for ($i = 0; $i < 10; $i++) {
 $view->sayBye();
 $view->print("<br>");
 
+// Using raw HTML is not supported directly.
+// However, we can do an output buffering hack to get the output of this HTML as a string.
+ob_start();
+// Manually create a callstack with a frame starting 2 lines ahead.
+$callStack = [['file' => __FILE__, 'line' => __LINE__+2, 'class' => __CLASS__, 'function' => __FUNCTION__]];
 ?>
 
-<!-- The "<p>hey there, " bit is not supported yet. Any actualy HTML in the .php file throws off the expected
-     index of each mapping. -->
-<!-- <p>hey there, <#?=$view->sayCompliment()?>!</p> -->
+<!-- The <$callStack / $view->marker->mark($callStack, ob_get_clean())> calls will properly map this html. -->
+<p>sup</p><br>
 
+<!-- Nested calls to $view work too. -->
+<p>hey there, <?=$view->sayCompliment()?>!</p>
+
+<!-- Inject html-source-map code. -->
 <script src="/js/html-source-maps.js"></script>
 <script>
-    window.__marks = new HTMLSourceMap(<?=json($view->marker->data())?>);
+    window.__marks = HTMLSourceMap.collectFromPage();
     console.log(window.__marks);
     window.__marks.observe();
     window.__marks.debugRender();
 </script>
+
+<?php
+$content = ob_get_clean();
+// Will at least create a mapping for the scripts HTML fragment above,
+// but the HTML will be linked to the following $view->print line instead
+// of where it was written in this file.
+// This may not have a workaround. Should explore augmenting an actual templating
+// library instead, perhaps it'd be simpler there than raw PHP templates.
+[, $id] = $view->marker->mark($callStack, $content);
+echo ($content);
+$view->marker->markEnd($id);
+?>
