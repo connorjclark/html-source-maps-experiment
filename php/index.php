@@ -151,5 +151,6 @@ $view->print("<br>");
 <script>
     window.__marks = new HTMLSourceMap(<?=json($view->marker->data())?>);
     console.log(window.__marks);
+    window.__marks.observe();
     window.__marks.debugRender();
 </script>
