@@ -55,7 +55,7 @@ output is the entire server response, stored here so that the client can access 
 
 This seems fine enough for understanding the HTML that comes out of a server. See commit ad26e8 for working example.
 
-[](1.png)
+![](1.png)
 
 However, in order to also map changes to the DOM via JS during runtime, this approach is lacking.
 
@@ -65,5 +65,5 @@ Browsers will actually "spruce up" the HTML it gets to be well-formed. This is w
 
 Instead of collecting all the mappings on the server and spitting it out in a script data tag - each mapping can be emitted as an HTML comment as-it-happens. Each magic comment will break up the HTML into the same segments as in the first approach, but the data will be embedded right next to the fragment it represents. Any augmentations from the browser will not break the mappings, b/c they no do not rely on an offset.
 
-[](2.png)
-[](3.png)
+![](2.png)
+![](3.png)

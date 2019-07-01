@@ -1,7 +1,7 @@
 # Source Maps for HTML
 
-See docs/notes.md.
+See [my notes](docs/notes.md) for more.
 
-[](docs/2.png)
+![](docs/2.png)
 
-[](docs/3.png)
+![](docs/3.png)
