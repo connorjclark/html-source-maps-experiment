@@ -1,3 +1,41 @@
+// https://github.com/stacktracejs/error-stack-parser/blob/master/dist/error-stack-parser.js#L51
+const CHROME_IE_STACK_REGEXP = /^\s*at .*(\S+\:\d+|\(native\))/m;
+function parseStackTrace(error) {
+  var filtered = error.stack.split('\n').filter(function (line) {
+    return !!line.match(CHROME_IE_STACK_REGEXP);
+  }, this);
+
+  return filtered.map(function (line) {
+    if (line.indexOf('(eval ') > -1) {
+      // Throw away eval information until we implement stacktrace.js/stackframe#8
+      line = line.replace(/eval code/g, 'eval').replace(/(\(eval at [^\()]*)|(\)\,.*$)/g, '');
+    }
+    var tokens = line.replace(/^\s+/, '').replace(/\(eval code/g, '(').split(/\s+/).slice(1);
+    var locationParts = extractLocation(tokens.pop());
+    var functionName = tokens.join(' ') || undefined;
+    var fileName = ['eval', '<anonymous>'].indexOf(locationParts[0]) > -1 ? undefined : locationParts[0];
+
+    return {
+      function: functionName,
+      file: fileName,
+      line: Number(locationParts[1]),
+      column: Number(locationParts[2]),
+      // source: line,
+    };
+  }, this);
+}
+
+function extractLocation(urlLike) {
+  // Fail-fast but return locations like "(native)"
+  if (urlLike.indexOf(':') === -1) {
+    return [urlLike];
+  }
+
+  var regExp = /(.+?)(?:\:(\d+))?(?:\:(\d+))?$/;
+  var parts = regExp.exec(urlLike.replace(/[\(\)]/g, ''));
+  return [parts[1], parts[2] || undefined, parts[3] || undefined];
+}
+
 // lul rng - for consistent and random colors.
 // https://stackoverflow.com/a/19301306/2788187
 const RNG = (() => {
@@ -98,17 +136,42 @@ class HTMLSourceMap {
   constructor(data) {
     this.data = data;
     this.debug = false;
+    this.debugOnMouseMoveHandler = this.debugOnMouseMoveHandler.bind(this);
   }
 
-  // TODO - create mappings during runtime when JS changes the DOM.
+  addMapping(node) {
+    const callStack = node.frames.map(frame => this.getFrameId(frame));
+    const mapping = {
+      source: 'js',
+      callStack,
+    }
+    const id = this.data.mappings.length;
+    this.data.mappings.push(mapping);
+    const mappingCommentEl = document.createComment(`hm mapping: ${id} ${JSON.stringify(mapping)}`);
+    const mappingCommentEndEl = document.createComment(`hm mapping end: ${id}`);
+    node.parentNode.insertBefore(mappingCommentEl, node);
+    node.parentNode.insertBefore(mappingCommentEndEl, node.nextSibling);
+  }
+
+  getFrameId(frame) {
+    const id = this.data.frames.findIndex(f => f.file === frame.file && f.line === frame.line && f.column === frame.column);
+    if (id >= 0) return id;
+    this.data.frames.push(frame);
+    return this.data.frames.length - 1;
+  }
+
   observe() {
-    return;
+    const getStackTrace = function () {
+      const obj = {};
+      Error.captureStackTrace(obj, getStackTrace);
+      return parseStackTrace(obj);
+    };
 
     // sue me.
     const originalFn = document.createElement;
     document.createElement = function (...args) {
       const el = originalFn.call(document, ...args);
-      console.trace();
+      el.frames = getStackTrace();
       return el;
     }
 
@@ -122,7 +185,7 @@ class HTMLSourceMap {
       let isExempt = false;
       let cur = el;
       while (cur) {
-        if (cur.dataset && cur.dataset.htmlSourceMapObserveExempt) {
+        if ((cur.dataset && cur.dataset.htmlSourceMapObserveExempt) || cur.nodeType === 8) {
           isExempt = true;
           break;
         }
@@ -131,28 +194,29 @@ class HTMLSourceMap {
       return isExempt;
     }
 
-    // Callback function to execute when mutations are observed
-    const callback = function (mutationsList, observer) {
+    const observer = new MutationObserver((mutationsList, observer) => {
+      let anyChanges = false;
       for (const mutation of mutationsList) {
         if (isExempt(mutation.target)) continue;
 
         if (mutation.type == 'childList') {
           for (const node of mutation.addedNodes) {
             if (isExempt(node)) continue;
-            console.log(mutation);
-            console.log('A child node has been added or removed.');
+            anyChanges = true;
+            this.addMapping(node);
           }
         } else if (mutation.type == 'attributes') {
+          // TODO
           console.log(mutation);
           console.log('The ' + mutation.attributeName + ' attribute was modified.');
         }
       }
-    };
 
-    // Create an observer instance linked to the callback function
-    const observer = new MutationObserver(callback);
+      if (anyChanges && this.debug) {
+        this.debugRender();
+      }
+    });
 
-    // Start observing the target node for configured mutations
     observer.observe(document.body, config);
   }
 
@@ -171,12 +235,63 @@ class HTMLSourceMap {
     return this.findNearestMapping(el.previousSibling);
   }
 
+  debugOnMouseMoveHandler(e) {
+    const debugFragmentsEl = this.debugEl.querySelector('.hm-fragments');
+    const selectedMappingViewEl = this.debugEl.querySelector('.hm-selected-mapping');
+    const tooltipEl = this.debugEl.querySelector('.hm-tooltip');
+
+    if (!debugFragmentsEl.contains(e.target)) {
+      tooltipEl.style.display = 'none';
+      return;
+    }
+
+    const mappingIndex = e.target.dataset.mapping;
+    const mapping = this.data.mappings[mappingIndex];
+    if (!mapping) {
+      return;
+    }
+
+    const callStack = mapping.callStack.map(i => this.data.frames[i]);
+    const view = {
+      source: mapping.source,
+      callStack,
+    };
+    selectedMappingViewEl.textContent = JSON.stringify(view, null, 2);
+
+    // i'm bad at tooltips.
+    const { width, height } = selectedMappingViewEl.getBoundingClientRect(selectedMappingViewEl);
+    let x = e.pageX - width / 2;
+    x = Math.max(x, 0);
+    x = Math.min(x, window.innerWidth - width);
+    tooltipEl.style.left = x + 'px';
+    tooltipEl.style.top = (e.pageY - height - 50) + 'px';
+    tooltipEl.style.display = 'block';
+  }
+
   // Augments the document in-place with a mapping visualization.
   debugRender() {
     this.debug = true;
 
-    const debugEl = document.createElement('div');
+    if (this.debugEl) {
+      this.debugEl.remove();
+      document.removeEventListener('mousemove', this.debugOnMouseMoveHandler);
+    }
+
+    if (!this.hasDebugStyles) {
+      this.hasDebugStyles = true;
+      const sheetEl = document.createElement('style');
+      document.head.appendChild(sheetEl);
+      setTimeout(() => {
+        const sheet = window.document.styleSheets[0];
+        sheet.insertRule('.hm-debug { border-top: black solid 5px; }', sheet.cssRules.length);
+        sheet.insertRule('.hm-tooltip { position: absolute; }', sheet.cssRules.length);
+        sheet.insertRule('.hm-mapping-highlight { display: inline-block; padding: 5px; }', sheet.cssRules.length);
+      }, 1);
+    }
+
+    const debugEl = this.debugEl = document.createElement('div');
     debugEl.classList.add('hm-debug');
+    debugEl.dataset.htmlSourceMapObserveExempt = true;
 
     const frameToColor = new Map();
     function getFrameColor(frameId) {
@@ -256,36 +371,8 @@ class HTMLSourceMap {
       }
     }
 
-    document.addEventListener('mousemove', (e) => {
-      if (!debugFragmentsEl.contains(e.target)) {
-        tooltipEl.style.display = 'none';
-        return;
-      }
-
-      const mappingIndex = e.target.dataset.mapping;
-      const mapping = this.data.mappings[mappingIndex];
-      if (!mapping) {
-        return;
-      }
-
-      const callStack = mapping.callStack.map(i => this.data.frames[i]);
-      const view = {
-        source: mapping.source,
-        callStack,
-      };
-      selectedMappingViewEl.textContent = JSON.stringify(view, null, 2);
-
-      // i'm bad at tooltips.
-      const { width, height } = selectedMappingViewEl.getBoundingClientRect(selectedMappingViewEl);
-      let x = e.pageX - width / 2;
-      x = Math.max(x, 0);
-      x = Math.min(x, window.innerWidth - width);
-      tooltipEl.style.left = x + 'px';
-      tooltipEl.style.top = (e.pageY - height - 50) + 'px';
-      tooltipEl.style.display = 'block';
-    });
-
     const selectedMappingViewEl = document.createElement('code');
+    selectedMappingViewEl.classList.add('hm-selected-mapping');
     selectedMappingViewEl.style.display = 'block';
     selectedMappingViewEl.style.backgroundColor = 'rgba(255, 255, 255, 0.95)';
     selectedMappingViewEl.style.margin = '10px';
@@ -296,15 +383,6 @@ class HTMLSourceMap {
     selectedMappingViewEl.style.minWidth = '400px';
     tooltipEl.appendChild(selectedMappingViewEl);
 
-    const sheetEl = document.createElement('style');
-    debugEl.appendChild(sheetEl);
-    setTimeout(() => {
-      const sheet = window.document.styleSheets[0];
-      sheet.insertRule('.hm-debug { border-top: black solid 5px; }', sheet.cssRules.length);
-      sheet.insertRule('.hm-tooltip { position: absolute; }', sheet.cssRules.length);
-      sheet.insertRule('.hm-mapping-highlight { display: inline-block; padding: 5px; }', sheet.cssRules.length);
-    }, 1);
-
     const debugHeaderEl = document.createElement('h2');
     debugHeaderEl.textContent = 'Source Map Visualization';
 
@@ -313,6 +391,7 @@ class HTMLSourceMap {
     debugEl.appendChild(tooltipEl);
 
     document.body.appendChild(debugEl);
+    document.addEventListener('mousemove', this.debugOnMouseMoveHandler);
   }
 }
 

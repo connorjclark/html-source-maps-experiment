@@ -56,7 +56,7 @@ class Marker
 
         $id = count($this->mappings);
         $this->mappings[] = [
-            'source' => 'PHP',
+            'source' => 'php',
             'callStack' => $callStack,
         ];
         $this->output = $this->output . $output;
@@ -218,6 +218,12 @@ $view->marker->pushFrame(['file' => __FILE__, 'line' => __LINE__+2, 'class' => _
         console.log(window.__marks);
         window.__marks.observe();
         window.__marks.debugRender();
+
+        setTimeout(() => {
+            const el = document.createElement('div');
+            el.textContent = 'made from JS';
+            document.body.insertBefore(el, document.body.firstChild);
+        }, 100);
     });
 </script>
 
