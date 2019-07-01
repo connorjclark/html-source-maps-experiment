@@ -36,18 +36,18 @@ class Marker
     private $marks = [];
     private $output = '';
 
-    public function mark($callStack = null, ...$args)
+    public function mark(...$args)
     {
         $args = func_get_args();
         $output = join($args, ' ');
 
-        if ($callStack == null) {
-            $callStack = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
-            // Remove `mark`.
-            array_shift($callStack);
-            // Remove `internal_print`.
-            array_shift($callStack);
-        }
+        $callStack = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+        // Remove `mark`.
+        array_shift($callStack);
+        // Remove `internal_print`.
+        array_shift($callStack);
+        // Add manual frames.
+        $callStack = array_merge($callStack, $this->frameStack);
 
         $whitelist = ['file', 'line', 'function', 'class'];
         $callStack = array_map(function ($frame) use ($whitelist) {
@@ -79,15 +79,15 @@ class Marker
         ];
     }
 
-    private $inlineTemplateLocationStack = [];
-    public function pushInlineTemplateLocation($file, $line, $class, $function)
+    private $frameStack = [];
+    public function pushFrame($frame)
     {
-        $this->inlineTemplateLocationStack[] = [[
-            'file' => $file,
-            'line' => $line,
-            'class' => $class,
-            'function' => $function,
-        ]];
+        $this->frameStack[] = $frame;
+    }
+
+    public function popFrame()
+    {
+        return array_pop($this->frameStack);
     }
 
     private function getFrameId($frame)
@@ -112,16 +112,16 @@ class View
         $this->marker = new Marker();
     }
 
-    private function internal_print()
+    private function internal_print(...$args)
     {
-        [$output, $id] = $this->marker->mark(null, ...func_get_args());
+        [$output, $id] = $this->marker->mark(...$args);
         echo ($output);
         $this->marker->markEnd($id);
     }
 
-    function print() {
+    function print(...$args) {
         // Ideally, all `internal_print` would be replaced with `echo`, but see file comment.
-        $this->internal_print($str, ...func_get_args());
+        $this->internal_print($str, ...$args);
     }
 
     public function sayHi()
@@ -165,14 +165,15 @@ $view->print("<br>");
 // Using raw HTML is not supported directly.
 // However, we can do an output buffering hack to get the output of this HTML as a string.
 ob_start();
-// Manually create a callstack with a frame starting 2 lines ahead.
-$callStack = [['file' => __FILE__, 'line' => __LINE__+2, 'class' => __CLASS__, 'function' => __FUNCTION__]];
+// Manually create a frame starting 2 lines ahead.
+// Something like this would be done in an actual templating engine, marking a new frame for each template file loaded.
+$view->marker->pushFrame(['file' => __FILE__, 'line' => __LINE__+2, 'class' => __CLASS__, 'function' => __FUNCTION__]);
 ?>
 
-<!-- The <$callStack / $view->marker->mark($callStack, ob_get_clean())> calls will properly map this html. -->
+<!-- The pushFrame/popFrame calls will properly map this html. -->
 <p>sup</p><br>
 
-<!-- Nested calls to $view work too. -->
+<!-- Nested renders work too, and will include the pushed frame in the callstack. -->
 <p>hey there, <?=$view->sayCompliment()?>!</p>
 
 <!-- Inject html-source-map code. -->
@@ -185,13 +186,9 @@ $callStack = [['file' => __FILE__, 'line' => __LINE__+2, 'class' => __CLASS__, '
 </script>
 
 <?php
-$content = ob_get_clean();
-// Will at least create a mapping for the scripts HTML fragment above,
-// but the HTML will be linked to the following $view->print line instead
-// of where it was written in this file.
-// This may not have a workaround. Should explore augmenting an actual templating
-// library instead, perhaps it'd be simpler there than raw PHP templates.
-[, $id] = $view->marker->mark($callStack, $content);
+$templateOutput = ob_get_clean();
+[$content, $id] = $view->marker->mark(null, $templateOutput);
+$view->marker->popFrame();
 echo ($content);
 $view->marker->markEnd($id);
 ?>
