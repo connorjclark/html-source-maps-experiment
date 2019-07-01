@@ -37,25 +37,52 @@ class HTMLSourceMap {
     const commentsIt = document.evaluate('//comment()', document, null, XPathResult.ANY_TYPE, null);
     let comment = commentsIt.iterateNext();
     while (comment) {
-      const textContent = comment.textContent.trim();
-      if (textContent.startsWith('hm frame:')) {
-        const [, index, json] = textContent.replace('hm frame:', '').match(/(\d+) (.*)/);
-        const frame = JSON.parse(json);
-        data.frames[index] = frame;
-      } else if (textContent.startsWith('hm mapping:')) {
-        const [, index, json] = textContent.replace('hm mapping:', '').match(/(\d+) (.*)/);
-        const mapping = JSON.parse(json);
-        mapping.commentNode = comment;
-        data.mappings[index] = mapping;
-      } else if (textContent.startsWith('hm mapping end:')) {
-        const index = parseInt(textContent.replace('hm mapping end:', '').trim());
-        const mapping = data.mappings[index];
-        mapping.endCommentNode = comment;
+      const parsedCommentData = this.parseCommentNode(comment);
+
+      if (parsedCommentData) {
+        if (parsedCommentData.type === 'frame') {
+          data.frames[parsedCommentData.index] = parsedCommentData.frame;
+        } else if (parsedCommentData.type === 'mapping-start') {
+          const mapping = parsedCommentData.mapping;
+          mapping.commentNode = comment;
+          data.mappings[parsedCommentData.index] = mapping;
+        } else if (parsedCommentData.type === 'mapping-end') {
+          const mapping = data.mappings[parsedCommentData.index];
+          mapping.endCommentNode = comment;
+        }
       }
+
       comment = commentsIt.iterateNext();
     }
 
     return new HTMLSourceMap(data);
+  }
+
+  static parseCommentNode(node) {
+    const textContent = node.textContent.trim();
+    if (textContent.startsWith('hm frame:')) {
+      const [, index, json] = textContent.replace('hm frame:', '').match(/(\d+) (.*)/);
+      const frame = JSON.parse(json);
+      return {
+        type: 'frame',
+        index,
+        frame,
+      };
+    } else if (textContent.startsWith('hm mapping:')) {
+      const [, index, json] = textContent.replace('hm mapping:', '').match(/(\d+) (.*)/);
+      const mapping = JSON.parse(json);
+      return {
+        type: 'mapping-start',
+        index,
+        mapping,
+      };
+    } else if (textContent.startsWith('hm mapping end:')) {
+      const index = parseInt(textContent.replace('hm mapping end:', '').trim());
+      return {
+        type: 'mapping-end',
+        index,
+      };
+    }
   }
 
   constructor(data) {
@@ -123,9 +150,11 @@ class HTMLSourceMap {
       return this.findNearestMapping(el.parentNode);
     }
 
-    if (el.previousSibling.nodeType === 8 && el.previousSibling.textContent.includes('hm mapping:')) {
-      const [, index] = el.previousSibling.textContent.replace('hm mapping:', '').match(/(\d+) (.*)/);
-      return this.data.mappings[index];
+    if (el.previousSibling.nodeType === 8) {
+      const parsedNodeData = HTMLSourceMap.parseCommentNode(el.previousSibling);
+      if (parsedNodeData && parsedNodeData.type === 'mapping-start') {
+        return this.data.mappings[parsedNodeData.index];
+      }
     }
 
     return this.findNearestMapping(el.previousSibling);
@@ -134,6 +163,10 @@ class HTMLSourceMap {
   // Augments the document in-place with a mapping visualization.
   debugRender() {
     this.debug = true;
+    const actualDocument = document.body.cloneNode(true);
+
+    const debugEl = document.createElement('div');
+    debugEl.classList.add('hm-debug');
 
     const frameToColor = new Map();
     function getFrameColor(frameId) {
@@ -165,33 +198,76 @@ class HTMLSourceMap {
       htmlFragment.forEach(node => wrapperEl.appendChild(node));
     }
 
-    document.addEventListener('mouseover', (e) => {
+    const tooltipEl = document.createElement('div');
+    tooltipEl.classList.add('hm-tooltip');
+
+    document.addEventListener('mousemove', (e) => {
+      if (!debugFragmentsEl.contains(e.target)) {
+        tooltipEl.style.display = 'none';
+        return;
+      }
+
       const mapping = this.findNearestMapping(e.target);
-      if (!mapping) return;
+      if (!mapping) {
+        return;
+      }
 
       const callStack = mapping.callStack.map(i => this.data.frames[i]);
       const view = {
-        ...mapping,
+        source: mapping.source,
         callStack,
       };
       selectedMappingViewEl.textContent = JSON.stringify(view, null, 2);
+
+      // i'm bad at tooltips.
+      const { width, height } = selectedMappingViewEl.getBoundingClientRect(selectedMappingViewEl);
+      let x = e.pageX - width / 2;
+      x = Math.max(x, 0);
+      x = Math.min(x, window.innerWidth - width);
+      tooltipEl.style.left = x + 'px';
+      tooltipEl.style.top = (e.pageY - height - 50) + 'px';
+      tooltipEl.style.display = 'block';
     });
 
-    const selectedMappingViewEl = document.createElement('pre');
-    document.body.appendChild(selectedMappingViewEl);
+    const selectedMappingViewEl = document.createElement('code');
     selectedMappingViewEl.style.display = 'block';
+    selectedMappingViewEl.style.backgroundColor = 'rgba(255, 255, 255, 0.95)';
     selectedMappingViewEl.style.margin = '10px';
     selectedMappingViewEl.style.border = 'black solid 1px';
     selectedMappingViewEl.style.padding = '2px';
+    selectedMappingViewEl.style.fontSize = '18px';
+    selectedMappingViewEl.style.whiteSpace = 'pre-wrap';
+    selectedMappingViewEl.style.minWidth = '400px';
+    tooltipEl.appendChild(selectedMappingViewEl);
 
     // Make everything inline and the highlight elements inline-block w/ padding - shows nested mappings better.
     const sheetEl = document.createElement('style');
-    document.body.appendChild(sheetEl);
+    debugEl.appendChild(sheetEl);
     setTimeout(() => {
       const sheet = window.document.styleSheets[0];
-      sheet.insertRule('* { display: inline; }', sheet.cssRules.length);
+      sheet.insertRule('.hm-debug { border-top: black solid 5px; }', sheet.cssRules.length);
+      sheet.insertRule('.hm-tooltip { position: absolute; }', sheet.cssRules.length);
+      sheet.insertRule('.hm-fragments * { display: inline; }', sheet.cssRules.length);
       sheet.insertRule('.hm-mapping-highlight { display: inline-block; padding: 5px; }', sheet.cssRules.length);
     }, 1);
+
+    const debugHeaderEl = document.createElement('h2');
+    debugHeaderEl.textContent = 'Source Map Visualization';
+
+    const debugFragmentsEl = document.createElement('div');
+    debugFragmentsEl.classList.add('hm-fragments');
+    debugFragmentsEl.appendChild(document.body);
+
+    debugEl.appendChild(debugHeaderEl);
+    debugEl.appendChild(debugFragmentsEl);
+    debugEl.appendChild(tooltipEl);
+
+    const newBody = document.createElement('body');
+    document.body = newBody;
+    for (const node of [...actualDocument.childNodes]) {
+      newBody.appendChild(node);
+    }
+    newBody.appendChild(debugEl);
   }
 }
 
