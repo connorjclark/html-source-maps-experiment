@@ -38,7 +38,6 @@ class Marker
 
     public function mark(...$args)
     {
-        $args = func_get_args();
         $output = join($args, ' ');
 
         $callStack = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
@@ -61,13 +60,39 @@ class Marker
             'callStack' => $callStack,
         ];
         $this->output = $this->output . $output;
-        echo ('<!-- hm mapping: ' . $id . ' ' . json_encode(end($this->mappings)) . '-->');
         return [$output, $id];
     }
 
-    public function markEnd($id)
+    public function injectMappingComment($id)
+    {
+        $mapping = $this->mappings[$id];
+        echo ('<!-- hm mapping: ' . $id . ' ' . json_encode($mapping) . '-->');
+    }
+
+    public function injectMappingEndComment($id)
     {
         echo ('<!-- hm mapping end: ' . $id . '-->');
+    }
+
+    public function injectMappingAttribute($id)
+    {
+        $mapping = $this->mappings[$id];
+        echo ('data-hm=\'' . $id . ' ' . json_encode($mapping) . '\'');
+    }
+
+    public function injectMappingEndAttribute($id)
+    {
+        $mapping = $this->mappings[$id];
+        echo ('data-hm-end=\'' . $id . '\'');
+    }
+
+    public function injectFrames()
+    {
+        $frames = array_values($this->frames);
+        for ($i = 0; $i < count($frames); $i++) {
+            $frame = $frames[$i];
+            echo ('<!-- hm frame: ' . $i . ' ' . json_encode($frame) . '-->');
+        }
     }
 
     public function &data()
@@ -97,10 +122,8 @@ class Marker
         if ($index != false) {
             return $index;
         }
-
         $id = count($this->frames);
         $this->frames[$key] = $frame;
-        echo ('<!-- hm frame: ' . $id . ' ' . json_encode($frame) . '-->');
         return $id;
     }
 }
@@ -115,8 +138,17 @@ class View
     private function internal_print(...$args)
     {
         [$output, $id] = $this->marker->mark(...$args);
+        $this->marker->injectMappingComment($id);
         echo ($output);
-        $this->marker->markEnd($id);
+        $this->marker->injectMappingEndComment($id);
+    }
+
+    private function internal_print_attribute($name, $value)
+    {
+        [$output, $id] = $this->marker->mark($name . '="' . $value . '"');
+        $this->marker->injectMappingAttribute($id);
+        echo ($output);
+        $this->marker->injectMappingEndAttribute($id);
     }
 
     function print(...$args) {
@@ -143,6 +175,16 @@ class View
     public function sayCompliment()
     {
         $this->internal_print("you're beautiful");
+    }
+
+    public function say($text)
+    {
+        $this->internal_print($text);
+    }
+
+    public function printAttribute($name, $value)
+    {
+        $this->internal_print_attribute($name, $value);
     }
 }
 
@@ -179,16 +221,21 @@ $view->marker->pushFrame(['file' => __FILE__, 'line' => __LINE__+2, 'class' => _
 <!-- Inject html-source-map code. -->
 <script src="/js/html-source-maps.js"></script>
 <script>
-    window.__marks = HTMLSourceMap.collectFromPage();
-    console.log(window.__marks);
-    window.__marks.observe();
-    window.__marks.debugRender();
+    document.addEventListener('DOMContentLoaded', () => {
+        window.__marks = HTMLSourceMap.collectFromPage();
+        console.log(window.__marks);
+        window.__marks.observe();
+        window.__marks.debugRender();
+    });
 </script>
 
 <?php
 $templateOutput = ob_get_clean();
 [$content, $id] = $view->marker->mark(null, $templateOutput);
 $view->marker->popFrame();
+$view->marker->injectMappingComment($id);
 echo ($content);
-$view->marker->markEnd($id);
+$view->marker->injectMappingEndComment($id);
+
+$view->marker->injectFrames();
 ?>

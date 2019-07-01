@@ -37,7 +37,7 @@ class HTMLSourceMap {
     const commentsIt = document.evaluate('//comment()', document, null, XPathResult.ANY_TYPE, null);
     let comment = commentsIt.iterateNext();
     while (comment) {
-      const parsedCommentData = this.parseCommentNode(comment);
+      const parsedCommentData = this.parseCommentData(comment.textContent);
 
       if (parsedCommentData) {
         if (parsedCommentData.type === 'frame') {
@@ -58,8 +58,8 @@ class HTMLSourceMap {
     return new HTMLSourceMap(data);
   }
 
-  static parseCommentNode(node) {
-    const textContent = node.textContent.trim();
+  static parseCommentData(textContent) {
+    textContent = textContent.trim();
     if (textContent.startsWith('hm frame:')) {
       const [, index, json] = textContent.replace('hm frame:', '').match(/(\d+) (.*)/);
       const frame = JSON.parse(json);
@@ -73,7 +73,7 @@ class HTMLSourceMap {
       const mapping = JSON.parse(json);
       return {
         type: 'mapping-start',
-        index,
+        index: parseInt(index),
         mapping,
       };
     } else if (textContent.startsWith('hm mapping end:')) {
@@ -90,8 +90,9 @@ class HTMLSourceMap {
     this.debug = false;
   }
 
+  // TODO - create mappings during runtime when JS changes the DOM.
   observe() {
-    return; // TODO
+    return;
 
     // sue me.
     const originalFn = document.createElement;
@@ -151,7 +152,7 @@ class HTMLSourceMap {
     }
 
     if (el.previousSibling.nodeType === 8) {
-      const parsedNodeData = HTMLSourceMap.parseCommentNode(el.previousSibling);
+      const parsedNodeData = HTMLSourceMap.parseCommentData(el.previousSibling.textContent);
       if (parsedNodeData && parsedNodeData.type === 'mapping-start') {
         return this.data.mappings[parsedNodeData.index];
       }
@@ -163,7 +164,6 @@ class HTMLSourceMap {
   // Augments the document in-place with a mapping visualization.
   debugRender() {
     this.debug = true;
-    const actualDocument = document.body.cloneNode(true);
 
     const debugEl = document.createElement('div');
     debugEl.classList.add('hm-debug');
@@ -178,28 +178,61 @@ class HTMLSourceMap {
       return color;
     }
 
-    // Wrap every mapping fragment in a span, for highlighting.
-    for (const mapping of this.data.mappings) {
-      // TODO the first element / body element poses an issue.
-      if (mapping.commentNode.parentNode === document) continue;
-
-      const htmlFragment = [];
-      let cur = mapping.commentNode.nextSibling;
-      while (cur && cur !== mapping.endCommentNode) {
-        htmlFragment.push(cur);
-        cur = cur.nextSibling;
-      }
-
-      const wrapperEl = document.createElement('span');
-      wrapperEl.classList.add('hm-mapping-highlight');
-      wrapperEl.style.backgroundColor = getFrameColor(mapping.callStack[0]);
-
-      mapping.commentNode.parentNode.insertBefore(wrapperEl, mapping.commentNode.nextSibling);
-      htmlFragment.forEach(node => wrapperEl.appendChild(node));
-    }
-
     const tooltipEl = document.createElement('div');
     tooltipEl.classList.add('hm-tooltip');
+
+    // This ensures all nodes outside of <html> are grabbed too.
+    const allHtml = [...document.childNodes].map(node => {
+      if (node.nodeType === 8) {
+        return '<!--' + node.textContent + '-->';
+      }
+
+      return node.outerHTML;
+    }).join('');
+
+    const debugFragmentsEl = document.createElement('div');
+    debugFragmentsEl.classList.add('hm-fragments');
+
+    let i = 0;
+    let cur = debugFragmentsEl;
+    while (i < allHtml.length) {
+      const char = allHtml.charAt(i);
+
+      if (char === '<' && allHtml.substr(i, 4) === '<!--') {
+        i += 4;
+        const endIndexOfComment = allHtml.indexOf('-->', i);
+        const textContent = allHtml.substr(i, endIndexOfComment - i);
+        const parseCommentData = HTMLSourceMap.parseCommentData(textContent);
+        if (parseCommentData && parseCommentData.type === 'mapping-start') {
+          const spanEl = document.createElement('span');
+          spanEl.classList.add('hm-mapping-highlight');
+          spanEl.style.backgroundColor = getFrameColor(parseCommentData.mapping.callStack[0]);
+          spanEl.dataset.mapping = parseCommentData.index;
+          cur.appendChild(spanEl);
+          cur = spanEl;
+        } else if (parseCommentData && parseCommentData.type === 'mapping-end') {
+          cur = cur.parentElement;
+        }
+        i = endIndexOfComment + 3;
+      } else {
+        i++;
+
+        if (char === '\n') {
+          cur.appendChild(document.createElement('br'));
+          continue;
+        }
+
+        let textNode;
+        if (cur.lastChild && cur.lastChild.nodeType === 3) {
+          textNode = cur.lastChild;
+        } else {
+          textNode = document.createTextNode('');
+          cur.appendChild(textNode);
+        }
+
+        textNode.textContent += char;
+      }
+    }
 
     document.addEventListener('mousemove', (e) => {
       if (!debugFragmentsEl.contains(e.target)) {
@@ -207,7 +240,8 @@ class HTMLSourceMap {
         return;
       }
 
-      const mapping = this.findNearestMapping(e.target);
+      const mappingIndex = e.target.dataset.mapping;
+      const mapping = this.data.mappings[mappingIndex];
       if (!mapping) {
         return;
       }
@@ -240,34 +274,23 @@ class HTMLSourceMap {
     selectedMappingViewEl.style.minWidth = '400px';
     tooltipEl.appendChild(selectedMappingViewEl);
 
-    // Make everything inline and the highlight elements inline-block w/ padding - shows nested mappings better.
     const sheetEl = document.createElement('style');
     debugEl.appendChild(sheetEl);
     setTimeout(() => {
       const sheet = window.document.styleSheets[0];
       sheet.insertRule('.hm-debug { border-top: black solid 5px; }', sheet.cssRules.length);
       sheet.insertRule('.hm-tooltip { position: absolute; }', sheet.cssRules.length);
-      sheet.insertRule('.hm-fragments * { display: inline; }', sheet.cssRules.length);
       sheet.insertRule('.hm-mapping-highlight { display: inline-block; padding: 5px; }', sheet.cssRules.length);
     }, 1);
 
     const debugHeaderEl = document.createElement('h2');
     debugHeaderEl.textContent = 'Source Map Visualization';
 
-    const debugFragmentsEl = document.createElement('div');
-    debugFragmentsEl.classList.add('hm-fragments');
-    debugFragmentsEl.appendChild(document.body);
-
     debugEl.appendChild(debugHeaderEl);
     debugEl.appendChild(debugFragmentsEl);
     debugEl.appendChild(tooltipEl);
 
-    const newBody = document.createElement('body');
-    document.body = newBody;
-    for (const node of [...actualDocument.childNodes]) {
-      newBody.appendChild(node);
-    }
-    newBody.appendChild(debugEl);
+    document.body.appendChild(debugEl);
   }
 }
 
