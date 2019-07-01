@@ -217,14 +217,8 @@ class HTMLSourceMap {
         parsedCommentData = HTMLSourceMap.parseCommentData(textContent);
         i = endIndexOfComment + 3;
       } else if (char === 'd' && allHtml.substr(i, 7) === 'data-hm') {
-        if (allHtml.substr(i, 12) === 'data-hm-end=') {
-          i += 'data-hm-end='.length;
-        } else if (allHtml.substr(i, 8) === 'data-hm=') {
-          i += 'data-hm='.length;
-        } else {
-          throw new Error();
-        }
-        i += 1;
+        const indexOfEquals = allHtml.indexOf('=', i);
+        i = indexOfEquals + 2;
         const endIndexOfAttributeValue = allHtml.indexOf('"', i);
         const textContent = allHtml.substr(i, endIndexOfAttributeValue - i);
         parsedCommentData = HTMLSourceMap.parseCommentData(textContent);
