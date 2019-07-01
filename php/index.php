@@ -77,13 +77,13 @@ class Marker
     public function injectMappingAttribute($id)
     {
         $mapping = $this->mappings[$id];
-        echo ('data-hm=\'' . $id . ' ' . json_encode($mapping) . '\'');
+        echo ('data-hm=\'hm mapping: ' . $id . ' ' . json_encode($mapping) . '\'');
     }
 
     public function injectMappingEndAttribute($id)
     {
         $mapping = $this->mappings[$id];
-        echo ('data-hm-end=\'' . $id . '\'');
+        echo ('data-hm-end=\'hm mapping end: ' . $id . '\'');
     }
 
     public function injectFrames()
@@ -135,7 +135,7 @@ class View
         $this->marker = new Marker();
     }
 
-    private function internal_print(...$args)
+    public function internal_print(...$args)
     {
         [$output, $id] = $this->marker->mark(...$args);
         $this->marker->injectMappingComment($id);
@@ -143,7 +143,7 @@ class View
         $this->marker->injectMappingEndComment($id);
     }
 
-    private function internal_print_attribute($name, $value)
+    public function internal_print_attribute($name, $value)
     {
         [$output, $id] = $this->marker->mark($name . '="' . $value . '"');
         $this->marker->injectMappingAttribute($id);
@@ -181,11 +181,6 @@ class View
     {
         $this->internal_print($text);
     }
-
-    public function printAttribute($name, $value)
-    {
-        $this->internal_print_attribute($name, $value);
-    }
 }
 
 function getHeader()
@@ -217,6 +212,8 @@ $view->marker->pushFrame(['file' => __FILE__, 'line' => __LINE__+2, 'class' => _
 
 <!-- Nested renders work too, and will include the pushed frame in the callstack. -->
 <p>hey there, <?=$view->sayCompliment()?>!</p>
+
+<a <?=$view->internal_print_attribute('href', 'https://www.example.com')?>>click here</a>
 
 <!-- Inject html-source-map code. -->
 <script src="/js/html-source-maps.js"></script>

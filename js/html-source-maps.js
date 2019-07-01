@@ -34,10 +34,8 @@ class HTMLSourceMap {
       mappings: [],
     };
 
-    const commentsIt = document.evaluate('//comment()', document, null, XPathResult.ANY_TYPE, null);
-    let comment = commentsIt.iterateNext();
-    while (comment) {
-      const parsedCommentData = this.parseCommentData(comment.textContent);
+    const read = (textContent) => {
+      const parsedCommentData = this.parseCommentData(textContent);
 
       if (parsedCommentData) {
         if (parsedCommentData.type === 'frame') {
@@ -51,15 +49,27 @@ class HTMLSourceMap {
           mapping.endCommentNode = comment;
         }
       }
+    }
 
+    const commentsIt = document.evaluate('//comment()', document, null, XPathResult.ANY_TYPE, null);
+    let comment = commentsIt.iterateNext();
+    while (comment) {
+      read(comment.textContent);
       comment = commentsIt.iterateNext();
+    }
+
+    const elementsIt = document.evaluate('//*[@data-hm]', document, null, XPathResult.ANY_TYPE, null);
+    let el = elementsIt.iterateNext();
+    while (el) {
+      read(el.dataset.hm);
+      el = elementsIt.iterateNext();
     }
 
     return new HTMLSourceMap(data);
   }
 
   static parseCommentData(textContent) {
-    textContent = textContent.trim();
+    textContent = textContent.trim().replace(/&quot;/g, '"');
     if (textContent.startsWith('hm frame:')) {
       const [, index, json] = textContent.replace('hm frame:', '').match(/(\d+) (.*)/);
       const frame = JSON.parse(json);
@@ -198,22 +208,27 @@ class HTMLSourceMap {
     while (i < allHtml.length) {
       const char = allHtml.charAt(i);
 
+      let parsedCommentData;
+
       if (char === '<' && allHtml.substr(i, 4) === '<!--') {
         i += 4;
         const endIndexOfComment = allHtml.indexOf('-->', i);
         const textContent = allHtml.substr(i, endIndexOfComment - i);
-        const parseCommentData = HTMLSourceMap.parseCommentData(textContent);
-        if (parseCommentData && parseCommentData.type === 'mapping-start') {
-          const spanEl = document.createElement('span');
-          spanEl.classList.add('hm-mapping-highlight');
-          spanEl.style.backgroundColor = getFrameColor(parseCommentData.mapping.callStack[0]);
-          spanEl.dataset.mapping = parseCommentData.index;
-          cur.appendChild(spanEl);
-          cur = spanEl;
-        } else if (parseCommentData && parseCommentData.type === 'mapping-end') {
-          cur = cur.parentElement;
-        }
+        parsedCommentData = HTMLSourceMap.parseCommentData(textContent);
         i = endIndexOfComment + 3;
+      } else if (char === 'd' && allHtml.substr(i, 7) === 'data-hm') {
+        if (allHtml.substr(i, 12) === 'data-hm-end=') {
+          i += 'data-hm-end='.length;
+        } else if (allHtml.substr(i, 8) === 'data-hm=') {
+          i += 'data-hm='.length;
+        } else {
+          throw new Error();
+        }
+        i += 1;
+        const endIndexOfAttributeValue = allHtml.indexOf('"', i);
+        const textContent = allHtml.substr(i, endIndexOfAttributeValue - i);
+        parsedCommentData = HTMLSourceMap.parseCommentData(textContent);
+        i = endIndexOfAttributeValue + 1;
       } else {
         i++;
 
@@ -231,6 +246,19 @@ class HTMLSourceMap {
         }
 
         textNode.textContent += char;
+      }
+
+      if (!parsedCommentData) continue;
+
+      if (parsedCommentData.type === 'mapping-start') {
+        const spanEl = document.createElement('span');
+        spanEl.classList.add('hm-mapping-highlight');
+        spanEl.style.backgroundColor = getFrameColor(parsedCommentData.mapping.callStack[0]);
+        spanEl.dataset.mapping = parsedCommentData.index;
+        cur.appendChild(spanEl);
+        cur = spanEl;
+      } else if (parsedCommentData.type === 'mapping-end') {
+        cur = cur.parentElement;
       }
     }
 
